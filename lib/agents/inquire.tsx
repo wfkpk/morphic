@@ -1,4 +1,4 @@
-import { openai } from 'ai/openai'
+import { OpenAI } from 'ai/openai'
 import { Copilot } from '@/components/copilot'
 import { createStreamableUI, createStreamableValue } from 'ai/rsc'
 import { ExperimentalMessage, experimental_streamObject } from 'ai'
@@ -8,12 +8,17 @@ export async function inquire(
   uiStream: ReturnType<typeof createStreamableUI>,
   messages: ExperimentalMessage[]
 ) {
+  const openai = new OpenAI({
+    baseUrl: process.env.OPENAI_API_BASE, // optional base URL for proxies etc.
+    apiKey: process.env.OPENAI_API_KEY, // optional API key, default to env property OPENAI_API_KEY
+    organization: '' // optional organization
+  })
   const objectStream = createStreamableValue<PartialInquiry>()
   uiStream.update(<Copilot inquiry={objectStream.value} />)
 
   let finalInquiry: PartialInquiry = {}
   await experimental_streamObject({
-    model: openai.chat('gpt-4-turbo-preview'),
+    model: openai.chat(process.env.OPENAI_API_MODEL || 'gpt-4-turbo'),
     system: `As a professional web researcher, your role is to deepen your understanding of the user's input by conducting further inquiries when necessary.
     After receiving an initial response from the user, carefully assess whether additional questions are absolutely essential to provide a comprehensive and accurate answer. Only proceed with further inquiries if the available information is insufficient or ambiguous.
 
