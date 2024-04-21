@@ -10,6 +10,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Section } from '@/components/section'
 import { FollowupPanel } from '@/components/followup-panel'
 import { inquire, researcher, taskManager, querySuggestor } from '@/lib/agents'
+import { writer } from '@/lib/agents/writer'
 
 async function submit(formData?: FormData, skip?: boolean) {
   'use server'
@@ -17,10 +18,13 @@ async function submit(formData?: FormData, skip?: boolean) {
   const aiState = getMutableAIState<typeof AI>()
   const uiStream = createStreamableUI()
   const isGenerating = createStreamableValue(true)
+  const isCollapsed = createStreamableValue(false)
 
   const messages: ExperimentalMessage[] = aiState.get() as any
-  // Limit the number of messages to 14
-  messages.splice(0, Math.max(messages.length - 14, 0))
+  const useSpecificAPI = process.env.USE_SPECIFIC_API_FOR_WRITER === 'true'
+  const maxMessages = useSpecificAPI ? 5 : 10
+  // Limit the number of messages to the maximum
+  messages.splice(0, Math.max(messages.length - maxMessages, 0))
   // Get the user input from the form data
   const userInput = skip
     ? `{"action": "skip"}`
@@ -50,6 +54,7 @@ async function submit(formData?: FormData, skip?: boolean) {
 
       uiStream.done()
       isGenerating.done()
+      isCollapsed.done(false)
       aiState.done([
         ...aiState.get(),
         { role: 'assistant', content: `inquiry: ${inquiry?.question}` }
@@ -57,21 +62,46 @@ async function submit(formData?: FormData, skip?: boolean) {
       return
     }
 
+    // Set the collapsed state to true
+    isCollapsed.done(true)
+
     //  Generate the answer
     let answer = ''
+    let toolOutputs = []
     let errorOccurred = false
     const streamText = createStreamableValue<string>()
-    while (answer.length === 0) {
+
+    // If useSpecificAPI is enabled, only function calls will be made
+    // If not using a tool, this model generates the answer
+    while (
+      useSpecificAPI
+        ? toolOutputs.length === 0 && answer.length === 0
+        : answer.length === 0
+    ) {
       // Search the web and generate the answer
-      const { fullResponse, hasError } = await researcher(
+      const { fullResponse, hasError, toolResponses } = await researcher(
         uiStream,
         streamText,
-        messages
+        messages,
+        useSpecificAPI
       )
       answer = fullResponse
+      toolOutputs = toolResponses
       errorOccurred = hasError
     }
-    streamText.done()
+
+    // If useSpecificAPI is enabled, generate the answer using the specific model
+    if (useSpecificAPI && answer.length === 0) {
+      // modify the messages to be used by the specific model
+      const modifiedMessages = messages.map(msg =>
+        msg.role === 'tool'
+          ? { ...msg, role: 'assistant', content: JSON.stringify(msg.content) }
+          : msg
+      ) as ExperimentalMessage[]
+      answer = await writer(uiStream, streamText, modifiedMessages)
+    } else {
+      streamText.done()
+    }
 
     if (!errorOccurred) {
       // Generate related queries
@@ -95,7 +125,8 @@ async function submit(formData?: FormData, skip?: boolean) {
   return {
     id: Date.now(),
     isGenerating: isGenerating.value,
-    component: uiStream.value
+    component: uiStream.value,
+    isCollapsed: isCollapsed.value
   }
 }
 
@@ -110,7 +141,8 @@ const initialAIState: {
 // The initial UI state that the client will keep track of, which contains the message IDs and their UI nodes.
 const initialUIState: {
   id: number
-  isGenerating: StreamableValue<boolean>
+  isGenerating?: StreamableValue<boolean>
+  isCollapsed?: StreamableValue<boolean>
   component: React.ReactNode
 }[] = []
 
